@@ -71,6 +71,15 @@ THE SOFTWARE.
 // #include <WiFiManager.h>         //https://github.com/tzapu/WiFiManager
 
 #include <TensorFlowLite_ESP32.h>
+#include "tensorflow/lite/micro/kernels/micro_ops.h"
+#include "tensorflow/lite/micro/micro_error_reporter.h"
+#include "tensorflow/lite/micro/micro_interpreter.h"
+#include "tensorflow/lite/micro/micro_mutable_op_resolver.h"
+// #include "tensorflow/lite/micro/system_setup.h"
+//#include "tensorflow/lite/micro/all_ops_resolver.h"
+#include "tensorflow/lite/schema/schema_generated.h"
+
+#indclude "model.h"
 
 #include "esp32/clk.h" // esp_clk_cpu_freq
 #include "esp_log.h" // esp_log_timestamp()
@@ -87,6 +96,26 @@ THE SOFTWARE.
 #if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINO_WIRE
     #include "Wire.h"
 #endif
+
+// Globals, used for compatibility with Arduino-style sketches.
+namespace {
+tflite::ErrorReporter* error_reporter = nullptr;
+const tflite::Model* model = nullptr;
+tflite::MicroInterpreter* interpreter = nullptr;
+TfLiteTensor* model_input = nullptr;
+// TfLiteTensor* output = nullptr;
+// int inference_count = 0;
+int input_length;
+
+// Create an area of memory to use for input, output, and intermediate arrays.
+// The size of this will depend on the model you're using, and may need to be
+// determined by experimentation.
+constexpr int kTensorArenaSize = 60 * 1024;
+uint8_t tensor_arena[kTensorArenaSize];
+
+// Whether we should clear the buffer next time we fetch data
+bool should_clear_buffer = false;
+}  // namespace
 
 // class default I2C address is 0x68
 // specific I2C addresses may be passed as a parameter here
@@ -294,6 +323,22 @@ void mpu_setup()
 
 void setup(void)
 {
+  // Set up logging. Google style is to avoid globals or statics because of
+  // lifetime uncertainty, but since this has a trivial destructor it's okay.
+  static tflite::MicroErrorReporter micro_error_reporter;  // NOLINT
+  error_reporter = &micro_error_reporter;
+
+  // Map the model into a usable data structure. This doesn't involve any
+  // copying or parsing, it's a very lightweight operation.
+  model = tflite::GetModel(g_magic_wand_model_data);
+  if (model->version() != TFLITE_SCHEMA_VERSION) {
+    error_reporter->Report(
+        "Model provided is schema version %d not equal "
+        "to supported version %d.",
+        model->version(), TFLITE_SCHEMA_VERSION);
+    return;
+  }
+
   Serial.begin(115200);
   Serial.println(F("\nOrientation Sensor OSC output")); Serial.println();
 
