@@ -4,6 +4,11 @@
 // https://forum.arduino.cc/t/mpu-6050s-linear-acceleration-is-way-off/171978/4
 // https://github.com/jrowberg/i2cdevlib/tree/master
 // Video explaining sensor fusion theory: https://www.youtube.com/watch?v=C7JQ7Rpwn2k&t=996s
+// https://howtomechatronics.com/tutorials/arduino/arduino-and-mpu6050-accelerometer-and-gyroscope-tutorial/
+// https://howtomechatronics.com/how-it-works/electrical-engineering/mems-accelerometer-gyrocope-magnetometer-arduino/
+// https://atadiat.com/en/e-towards-understanding-imu-basics-of-accelerometer-and-gyroscope-sensors/
+// https://forum.arduino.cc/t/mpu6050-sensor-resolution-and-sensitivity/582985
+// https://plaw.info/articles/sensorfusion/
 
 /* ============================================
 I2Cdev device library code is placed under the MIT license
