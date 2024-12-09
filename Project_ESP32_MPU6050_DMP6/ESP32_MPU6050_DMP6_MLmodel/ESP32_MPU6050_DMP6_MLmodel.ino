@@ -79,7 +79,7 @@ THE SOFTWARE.
 //#include "tensorflow/lite/micro/all_ops_resolver.h"
 #include "tensorflow/lite/schema/schema_generated.h"
 
-#indclude "model.h"
+#include "model.h"
 
 #include "esp32/clk.h" // esp_clk_cpu_freq
 #include "esp_log.h" // esp_log_timestamp()
@@ -328,16 +328,16 @@ void setup(void)
   static tflite::MicroErrorReporter micro_error_reporter;  // NOLINT
   error_reporter = &micro_error_reporter;
 
-  // Map the model into a usable data structure. This doesn't involve any
-  // copying or parsing, it's a very lightweight operation.
-  model = tflite::GetModel(g_magic_wand_model_data);
-  if (model->version() != TFLITE_SCHEMA_VERSION) {
-    error_reporter->Report(
-        "Model provided is schema version %d not equal "
-        "to supported version %d.",
-        model->version(), TFLITE_SCHEMA_VERSION);
-    return;
-  }
+  // // Map the model into a usable data structure. This doesn't involve any
+  // // copying or parsing, it's a very lightweight operation.
+  // model = tflite::GetModel(g_magic_wand_model_data);
+  // if (model->version() != TFLITE_SCHEMA_VERSION) {
+  //   error_reporter->Report(
+  //       "Model provided is schema version %d not equal "
+  //       "to supported version %d.",
+  //       model->version(), TFLITE_SCHEMA_VERSION);
+  //   return;
+  // }
 
   Serial.begin(115200);
   Serial.println(F("\nOrientation Sensor OSC output")); Serial.println();
