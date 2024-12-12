@@ -10,6 +10,18 @@
 // https://forum.arduino.cc/t/mpu6050-sensor-resolution-and-sensitivity/582985
 // https://plaw.info/articles/sensorfusion/
 
+// https://how2electronics.com/connecting-esp32-to-amazon-aws-iot-core-using-mqtt/
+// https://www.youtube.com/watch?v=idf-gGXvIu4
+// https://aws.amazon.com/blogs/compute/building-an-aws-iot-core-device-using-aws-serverless-and-an-esp32/
+// https://docs.aws.amazon.com/sns/latest/dg/sns-setting-up.html
+// https://docs.aws.amazon.com/IAM/latest/UserGuide/enable-virt-mfa-for-root.html
+// https://docs.aws.amazon.com/singlesignon/latest/userguide/quick-start-default-idc.html
+// https://docs.aws.amazon.com/iot/latest/developerguide/iot-sns-rule.html
+// https://eu-north-1.console.aws.amazon.com/dynamodbv2/home?region=eu-north-1#tables
+// https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/GettingStartedDynamoDB.html
+// https://docs.aws.amazon.com/iot/latest/developerguide/iot-ddb-rule.html
+// https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/SettingUp.DynamoWebService.html
+
 /* ============================================
 I2Cdev device library code is placed under the MIT license
 Copyright (c) 2012 Jeff Rowberg
@@ -64,16 +76,24 @@ THE SOFTWARE.
   InvenSense is with the MPU6050_DMP6.info example sketch for the Arduino. 
 */
 
-// #if defined(ESP8266)
-// #include <ESP8266WiFi.h>
-// #else
-// #include <WiFi.h>
-// #endif
-// #include <DNSServer.h>
-// #include <WiFiClient.h>
-// #include <WiFiUdp.h>
-// #include <OSCMessage.h>
-// #include <WiFiManager.h>         //https://github.com/tzapu/WiFiManager
+// ================================================================
+// ===              WIFI AWS             ===
+// ================================================================
+#include "secrets.h"
+#include <WiFiClientSecure.h>
+#include <PubSubClient.h>
+#include <ArduinoJson.h>
+#include "WiFi.h"
+
+
+#define AWS_IOT_PUBLISH_TOPIC   "esp32iot/pub"
+#define AWS_IOT_SUBSCRIBE_TOPIC "esp32iot/sub"
+
+WiFiClientSecure net = WiFiClientSecure();
+PubSubClient client(net);
+// ================================================================
+// ===              MPU6050             ===
+// ================================================================
 
 #include "esp32/clk.h" // esp_clk_cpu_freq
 #include "esp_log.h" // esp_log_timestamp()
@@ -134,9 +154,6 @@ const char DEVICE_NAME[] = "mpu6050";
 #define NFW 6 // number of feature windows stored
 #define NTI 200 // total number of interations
 
-// WiFiUDP Udp;                                // A UDP instance to let us send and receive packets over UDP
-// const IPAddress outIp(192, 168, 1, 11);     // remote IP to receive OSC
-// const unsigned int outPort = 9999;          // remote port to receive OSC
 uint8_t winSampleCount = 0; // Feature window sample count
 uint8_t winSamplePrintCount = 0; // Feature window sample print count
 uint16_t totalSampleCount = 0;
@@ -295,9 +312,78 @@ void mpu_setup()
   // Serial.println();
 }
 
+void connectAWS()
+{
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+ 
+  Serial.println("Connecting to Wi-Fi");
+ 
+  while (WiFi.status() != WL_CONNECTED)
+  {
+    delay(500);
+    Serial.print(".");
+  }
+ 
+  // Configure WiFiClientSecure to use the AWS IoT device credentials
+  net.setCACert(AWS_CERT_CA);
+  net.setCertificate(AWS_CERT_CRT);
+  net.setPrivateKey(AWS_CERT_PRIVATE);
+ 
+  // Connect to the MQTT broker on the AWS endpoint we defined earlier
+  client.setServer(AWS_IOT_ENDPOINT, 8883);
+ 
+  // Create a message handler
+  client.setCallback(messageHandler);
+ 
+  Serial.println("Connecting to AWS IOT");
+ 
+  while (!client.connect(THINGNAME))
+  {
+    Serial.print(".");
+    delay(100);
+  }
+ 
+  if (!client.connected())
+  {
+    Serial.println("AWS IoT Timeout!");
+    return;
+  }
+ 
+  // Subscribe to a topic
+  client.subscribe(AWS_IOT_SUBSCRIBE_TOPIC);
+ 
+  Serial.println("AWS IoT Connected!");
+}
+
+void publishMessage()
+{
+  // StaticJsonDocument<200> doc;
+  JsonDocument doc;
+  doc["humidity"] = 30.0;
+  doc["temperature"] = 20.0;
+  char jsonBuffer[512];
+  serializeJson(doc, jsonBuffer); // print to client
+ 
+  client.publish(AWS_IOT_PUBLISH_TOPIC, jsonBuffer);
+}
+
+void messageHandler(char* topic, byte* payload, unsigned int length)
+{
+  Serial.print("incoming: ");
+  Serial.println(topic);
+ 
+  // StaticJsonDocument<200> doc;
+  JsonDocument doc;
+  deserializeJson(doc, payload);
+  const char* message = doc["message"];
+  Serial.println(message);
+}
+
 void setup(void)
 {
   Serial.begin(115200);
+  connectAWS();
   Serial.println(F("\nOrientation Sensor OSC output")); Serial.println();
 
   cpu_freq = esp_clk_cpu_freq();
@@ -371,6 +457,166 @@ void LeftShiftArrayUint32(uint32_t* array)
     }
 }
 
+void GetMpuDmpValues()
+{
+    mpu.dmpGetQuaternion(&q, fifoBuffer); // See register data sheet. Data from registers placed in fifoBuffer, these values are then divided by 16384 (accuracy of signed 16 bit register and 2g sensitivity. 4g sensitivity is 8192 LSB/g, etc) to get values in g (i.e. 1g = 9.81 m/(s^2)). Value of 8192 is 1g with 2g sensitivity implemented. Bytes 0 to 13 in FIFO buffer. Gyro sensivity is 131 LSB/deg/s at 250 deg/s, 65.5 LSB/deg/s at 500 deg/s. Quaternion fuses the accelerometer and gyroscope data to correct rotational drift, correct accel due to gravity,  helps remove accelerometer noise without needing low pass filter (which can remove important data peaks). Accelerometers can give you tilt/angle relative to gravity (i.e. upwards direction), but have lots of hand jitter, gyroscopes are better at measuring tilt/angle, but they get drift due to not measuring gravity.
+    // mpu.dmpGetEuler(euler, &q); // display Euler angles in degrees. Calculated from quarternions, suffers from Gimbal lock.
+    mpu.dmpGetAccel(&aa, fifoBuffer); // Data from registers placed in fifoBuffer and raw values placed into aa (hasn't been divided by 16384)
+    mpu.dmpGetGravity(&gravity, &q); // gravity vector
+    mpu.dmpGetYawPitchRoll(angVel, &q, &gravity); // display yaw, pitch, roll in degrees/s. Calculated from quarternions, suffers from Gimbal lock, needs gravity vector for calculations.
+    mpu.dmpGetLinearAccel(&aaReal, &aa, &gravity); // display real acceleration that is in body coordinate frame (sensor coordinate frame), adjusted to remove gravity
+    mpu.dmpConvertToWorldFrame(&aaWorld, &aaReal, &q); // display initial world coordinate frame acceleration, adjusted to remove gravity and rotated based on known orientation from quaternion. Yaw is relative to initial orientation, since no magnetometer is present in this case.
+}
+
+void PrintHeading()
+{
+    Serial.println("---------------");
+    Serial.print("System Time (ms)");
+    // Serial.print(",\t");
+    // Serial.print("wx (deg/s)");
+    // Serial.print(",\t");
+    // Serial.print("wy (deg/s)");
+    // Serial.print(",\t");
+    // Serial.print("wz (deg/s)");
+    // Serial.print(",\t");
+    // Serial.print("axRaw (int16)");
+    // Serial.print(",\t");
+    // Serial.print("ayRaw (int16)");
+    // Serial.print(",\t");
+    // Serial.print("azRaw (int16)");
+    // Serial.print(",\t");
+    // Serial.print("axReal (int16)");
+    // Serial.print(",\t");
+    // Serial.print("ayReal (int16)");
+    // Serial.print(",\t");
+    // Serial.print("azReal (int16)");
+    Serial.print(",\t");
+    Serial.print("axWorld (int16)");
+    Serial.print(",\t");
+    Serial.print("ayWorld (int16)");
+    Serial.print(",\t");
+    Serial.print("azWorld (int16)");
+    // Serial.print(",\t");
+    // Serial.print("gx (g)");
+    // Serial.print(",\t");
+    // Serial.print("gy (g)");
+    // Serial.print(",\t");
+    // Serial.print("gz (g)");
+    // Serial.print(",\t");
+    // Serial.print("axMeanL (int16)");
+    // Serial.print(",\t");
+    // Serial.print("axMeanR (int16)");
+    // Serial.print(",\t");
+    // Serial.print("ayMeanL (int16)");
+    // Serial.print(",\t");
+    // Serial.print("ayMeanR (int16)");
+    // Serial.print(",\t");
+    // Serial.print("azMeanL (int16)");
+    // Serial.print(",\t");
+    // Serial.print("azMeanR (int16)");
+    // Serial.print(",\t");
+    // Serial.print("axStdDevL");
+    // Serial.print(",\t");
+    // Serial.print("axStdDevR");
+    // Serial.print(",\t");
+    // Serial.print("ayStdDevL");
+    // Serial.print(",\t");
+    // Serial.print("ayStdDevR");
+    // Serial.print(",\t");
+    // Serial.print("azStdDevL");
+    // Serial.print(",\t");
+    // Serial.print("azStdDevR");
+    Serial.print(",\t");
+    Serial.print("axyStdDevL");
+    Serial.print(",\t");
+    Serial.print("axyStdDevR");
+    // Serial.print(",\t");
+    // Serial.print("axzStdDevL");
+    // Serial.print(",\t");
+    // Serial.print("axzStdDevR");
+    Serial.println();
+}
+
+void PrintMpu6050Values()
+{
+    Serial.print(esp_log_timestamp()); // milliseconds
+    // Serial.print(q.w, 6); // Serial.print(value, 6): 6 decimal places
+    // Serial.print(q.x, 6);
+    // Serial.print(q.y, 6);
+    // Serial.print(q.z, 6);
+    // Serial.print(euler[0] * 180/M_PI);
+    // Serial.print(euler[1] * 180/M_PI);
+    // Serial.print(euler[2] * 180/M_PI);
+    // Serial.print(",\t");
+    // Serial.print(angVel[2] * 180/M_PI); // roll: x
+    // Serial.print(",\t");
+    // Serial.print(angVel[1] * 180/M_PI); // pitch: y
+    // Serial.print(",\t");
+    // Serial.print(angVel[0] * 180/M_PI); // yaw: z
+    // Serial.print(",\t");
+    // Serial.print(aa.x); // aRaw
+    // Serial.print(",\t");
+    // Serial.print(aa.y); // aRaw
+    // Serial.print(",\t");
+    // Serial.print(aa.z); // aRaw
+    // Serial.print(",\t");
+    // Serial.print(aaReal.x); 
+    // Serial.print(",\t");
+    // Serial.print(aaReal.y);
+    // Serial.print(",\t");
+    // Serial.print(aaReal.z);
+    Serial.print(",\t");
+    Serial.print(aaWorld.x);
+    Serial.print(",\t");
+    Serial.print(aaWorld.y);
+    Serial.print(",\t");
+    Serial.print(aaWorld.z);
+    // Serial.print(",\t");
+    // Serial.print(gravity.x);
+    // Serial.print(",\t");
+    // Serial.print(gravity.y);
+    // Serial.print(",\t");
+    // Serial.print(gravity.z);
+}
+
+void PrintFeatures()
+{
+    // Serial.print(esp_log_timestamp()); // milliseconds
+    // Serial.print(",\t");
+    // Serial.print(xMeanL);
+    // Serial.print(",\t");
+    // Serial.print(xMeanR);
+    // Serial.print(",\t");
+    // Serial.print(yMeanL);
+    // Serial.print(",\t");
+    // Serial.print(yMeanR);
+    // Serial.print(",\t");
+    // Serial.print(zMeanL);
+    // Serial.print(",\t");
+    // Serial.print(zMeanR);
+    // Serial.print(",\t");
+    // Serial.print(xStdDevL);
+    // Serial.print(",\t");
+    // Serial.print(xStdDevR);
+    // Serial.print(",\t");
+    // Serial.print(yStdDevL);
+    // Serial.print(",\t");
+    // Serial.print(yStdDevR);
+    // Serial.print(",\t");
+    // Serial.print(zStdDevL);
+    // Serial.print(",\t");
+    // Serial.print(zStdDevR);
+    Serial.print(",\t");
+    Serial.print(xyStdDevL);
+    Serial.print(",\t");
+    Serial.print(xyStdDevR);
+    // Serial.print(",\t");
+    // Serial.print(xzStdDevL);
+    // Serial.print(",\t");
+    // Serial.print(xzStdDevR);
+    // Serial.println();
+}
+
 void mpu_loop()
 {
     // if programming failed, don't try to do anything
@@ -417,18 +663,11 @@ void mpu_loop()
             winSampleCount++;
             winSamplePrintCount = winSampleCount;
 
-            mpu.dmpGetQuaternion(&q, fifoBuffer); // See register data sheet. Data from registers placed in fifoBuffer, these values are then divided by 16384 (accuracy of signed 16 bit register and 2g sensitivity. 4g sensitivity is 8192 LSB/g, etc) to get values in g (i.e. 1g = 9.81 m/(s^2)). Value of 8192 is 1g with 2g sensitivity implemented. Bytes 0 to 13 in FIFO buffer. Gyro sensivity is 131 LSB/deg/s at 250 deg/s, 65.5 LSB/deg/s at 500 deg/s. Quaternion fuses the accelerometer and gyroscope data to correct rotational drift, correct accel due to gravity,  helps remove accelerometer noise without needing low pass filter (which can remove important data peaks). Accelerometers can give you tilt/angle relative to gravity (i.e. upwards direction), but have lots of hand jitter, gyroscopes are better at measuring tilt/angle, but they get drift due to not measuring gravity.
-            // mpu.dmpGetEuler(euler, &q); // display Euler angles in degrees. Calculated from quarternions, suffers from Gimbal lock.
-            mpu.dmpGetAccel(&aa, fifoBuffer); // Data from registers placed in fifoBuffer and raw values placed into aa (hasn't been divided by 16384)
-            mpu.dmpGetGravity(&gravity, &q); // gravity vector
-            mpu.dmpGetYawPitchRoll(angVel, &q, &gravity); // display yaw, pitch, roll in degrees/s. Calculated from quarternions, suffers from Gimbal lock, needs gravity vector for calculations.
-            mpu.dmpGetLinearAccel(&aaReal, &aa, &gravity); // display real acceleration that is in body coordinate frame (sensor coordinate frame), adjusted to remove gravity
-            mpu.dmpConvertToWorldFrame(&aaWorld, &aaReal, &q); // display initial world coordinate frame acceleration, adjusted to remove gravity and rotated based on known orientation from quaternion. Yaw is relative to initial orientation, since no magnetometer is present in this case.
-
+            GetMpuDmpValues();
+            
             xFeatSum += (int32_t)aaWorld.x;
             yFeatSum += (int32_t)aaWorld.y;
             zFeatSum += (int32_t)aaWorld.z;
-
             xFeatSumAbs = (uint32_t)abs(aaWorld.x);
             xFeatSumSq += sq(xFeatSumAbs);
             yFeatSumAbs = (uint32_t)abs(aaWorld.y);
@@ -513,156 +752,30 @@ void mpu_loop()
                 zFeatSumSq = 0;
             }
 
+            if (inputChar=='a')
+            {
+              publishMessage();
+              // client.loop();
+              inputChar = 'p';
+              Serial.println("publishMessage");
+            }
+
             if (inputChar=='o') // In serial monitor need to select "No Line Ending" option, otherwise serial monitor will add return or line ending character. https://www.programmingelectronics.com/serial-read/. Putty config local echo "force off" to not show characters on screen that you have entered, local line ending "force off" so that no line ending or return characters are entered along with your own char entry. https://stackoverflow.com/questions/4999280/how-to-send-characters-in-putty-serial-communication-only-when-pressing-enter
             {
                 totalSampleCount++;
 
                 if (totalSampleCount==1)
                 {
-                    Serial.println("---------------");
-                    Serial.print("System Time (ms)");
-                    // Serial.print(",\t");
-                    // Serial.print("wx (deg/s)");
-                    // Serial.print(",\t");
-                    // Serial.print("wy (deg/s)");
-                    // Serial.print(",\t");
-                    // Serial.print("wz (deg/s)");
-                    // Serial.print(",\t");
-                    // Serial.print("axRaw (int16)");
-                    // Serial.print(",\t");
-                    // Serial.print("ayRaw (int16)");
-                    // Serial.print(",\t");
-                    // Serial.print("azRaw (int16)");
-                    // Serial.print(",\t");
-                    // Serial.print("axReal (int16)");
-                    // Serial.print(",\t");
-                    // Serial.print("ayReal (int16)");
-                    // Serial.print(",\t");
-                    // Serial.print("azReal (int16)");
-                    Serial.print(",\t");
-                    Serial.print("axWorld (int16)");
-                    Serial.print(",\t");
-                    Serial.print("ayWorld (int16)");
-                    Serial.print(",\t");
-                    Serial.print("azWorld (int16)");
-                    // Serial.print(",\t");
-                    // Serial.print("gx (g)");
-                    // Serial.print(",\t");
-                    // Serial.print("gy (g)");
-                    // Serial.print(",\t");
-                    // Serial.print("gz (g)");
-                    // Serial.print(",\t");
-                    // Serial.print("axMeanL (int16)");
-                    // Serial.print(",\t");
-                    // Serial.print("axMeanR (int16)");
-                    // Serial.print(",\t");
-                    // Serial.print("ayMeanL (int16)");
-                    // Serial.print(",\t");
-                    // Serial.print("ayMeanR (int16)");
-                    // Serial.print(",\t");
-                    // Serial.print("azMeanL (int16)");
-                    // Serial.print(",\t");
-                    // Serial.print("azMeanR (int16)");
-                    // Serial.print(",\t");
-                    // Serial.print("axStdDevL");
-                    // Serial.print(",\t");
-                    // Serial.print("axStdDevR");
-                    // Serial.print(",\t");
-                    // Serial.print("ayStdDevL");
-                    // Serial.print(",\t");
-                    // Serial.print("ayStdDevR");
-                    // Serial.print(",\t");
-                    // Serial.print("azStdDevL");
-                    // Serial.print(",\t");
-                    // Serial.print("azStdDevR");
-                    Serial.print(",\t");
-                    Serial.print("axyStdDevL");
-                    Serial.print(",\t");
-                    Serial.print("axyStdDevR");
-                    // Serial.print(",\t");
-                    // Serial.print("axzStdDevL");
-                    // Serial.print(",\t");
-                    // Serial.print("axzStdDevR");
-                    Serial.println();
+                    PrintHeading();
                 }
 
                 if (totalSampleCount <= NTI) // sample every 20ms for 3s. 3s is 150 samples
                 {
-                    Serial.print(esp_log_timestamp()); // milliseconds
-                    // Serial.print(q.w, 6); // Serial.print(value, 6): 6 decimal places
-                    // Serial.print(q.x, 6);
-                    // Serial.print(q.y, 6);
-                    // Serial.print(q.z, 6);
-                    // Serial.print(euler[0] * 180/M_PI);
-                    // Serial.print(euler[1] * 180/M_PI);
-                    // Serial.print(euler[2] * 180/M_PI);
-                    // Serial.print(",\t");
-                    // Serial.print(angVel[2] * 180/M_PI); // roll: x
-                    // Serial.print(",\t");
-                    // Serial.print(angVel[1] * 180/M_PI); // pitch: y
-                    // Serial.print(",\t");
-                    // Serial.print(angVel[0] * 180/M_PI); // yaw: z
-                    // Serial.print(",\t");
-                    // Serial.print(aa.x); // aRaw
-                    // Serial.print(",\t");
-                    // Serial.print(aa.y); // aRaw
-                    // Serial.print(",\t");
-                    // Serial.print(aa.z); // aRaw
-                    // Serial.print(",\t");
-                    // Serial.print(aaReal.x); 
-                    // Serial.print(",\t");
-                    // Serial.print(aaReal.y);
-                    // Serial.print(",\t");
-                    // Serial.print(aaReal.z);
-                    Serial.print(",\t");
-                    Serial.print(aaWorld.x);
-                    Serial.print(",\t");
-                    Serial.print(aaWorld.y);
-                    Serial.print(",\t");
-                    Serial.print(aaWorld.z);
-                    // Serial.print(",\t");
-                    // Serial.print(gravity.x);
-                    // Serial.print(",\t");
-                    // Serial.print(gravity.y);
-                    // Serial.print(",\t");
-                    // Serial.print(gravity.z);
+                    PrintMpu6050Values();
 
                     if (winSamplePrintCount % NSW == 0)
                     {
-                        // Serial.print(esp_log_timestamp()); // milliseconds
-                        // Serial.print(",\t");
-                        // Serial.print(xMeanL);
-                        // Serial.print(",\t");
-                        // Serial.print(xMeanR);
-                        // Serial.print(",\t");
-                        // Serial.print(yMeanL);
-                        // Serial.print(",\t");
-                        // Serial.print(yMeanR);
-                        // Serial.print(",\t");
-                        // Serial.print(zMeanL);
-                        // Serial.print(",\t");
-                        // Serial.print(zMeanR);
-                        // Serial.print(",\t");
-                        // Serial.print(xStdDevL);
-                        // Serial.print(",\t");
-                        // Serial.print(xStdDevR);
-                        // Serial.print(",\t");
-                        // Serial.print(yStdDevL);
-                        // Serial.print(",\t");
-                        // Serial.print(yStdDevR);
-                        // Serial.print(",\t");
-                        // Serial.print(zStdDevL);
-                        // Serial.print(",\t");
-                        // Serial.print(zStdDevR);
-                        Serial.print(",\t");
-                        Serial.print(xyStdDevL);
-                        Serial.print(",\t");
-                        Serial.print(xyStdDevR);
-                        // Serial.print(",\t");
-                        // Serial.print(xzStdDevL);
-                        // Serial.print(",\t");
-                        // Serial.print(xzStdDevR);
-                        // Serial.println();
+                        PrintFeatures();
                     }
                     Serial.println();
                 }
@@ -690,5 +803,6 @@ void loop(void)
     }
 
     mpu_loop(); 
+    client.loop();
 }
 
