@@ -91,6 +91,8 @@ THE SOFTWARE.
 
 WiFiClientSecure net = WiFiClientSecure();
 PubSubClient client(net);
+uint8_t publishMsg = 1;
+
 // ================================================================
 // ===              MPU6050             ===
 // ================================================================
@@ -360,8 +362,7 @@ void publishMessage()
 {
   // StaticJsonDocument<200> doc;
   JsonDocument doc;
-  doc["humidity"] = 30.0;
-  doc["temperature"] = 20.0;
+  doc["fall"] = "Person A has fallen";
   char jsonBuffer[512];
   serializeJson(doc, jsonBuffer); // print to client
  
@@ -410,20 +411,6 @@ void setup(void)
   Serial.print(freqApb);
   Serial.println(" Hz");
 
-  //WiFiManager
-  //Local intialization. Once its business is done, there is no need to keep it around
-  // WiFiManager wifiManager;
-  //reset saved settings
-  //wifiManager.resetSettings();
-
-  //fetches ssid and pass from eeprom and tries to connect
-  //if it does not connect it starts an access point with the specified name
-  //and goes into a blocking loop awaiting configuration
-  // wifiManager.autoConnect(DEVICE_NAME);
-
-  // Serial.print(F("WiFi connected! IP address: "));
-  // Serial.println(WiFi.localIP());
-
   mpu_setup();
 }
 
@@ -466,6 +453,18 @@ void GetMpuDmpValues()
     mpu.dmpGetYawPitchRoll(angVel, &q, &gravity); // display yaw, pitch, roll in degrees/s. Calculated from quarternions, suffers from Gimbal lock, needs gravity vector for calculations.
     mpu.dmpGetLinearAccel(&aaReal, &aa, &gravity); // display real acceleration that is in body coordinate frame (sensor coordinate frame), adjusted to remove gravity
     mpu.dmpConvertToWorldFrame(&aaWorld, &aaReal, &q); // display initial world coordinate frame acceleration, adjusted to remove gravity and rotated based on known orientation from quaternion. Yaw is relative to initial orientation, since no magnetometer is present in this case.
+}
+
+void SerialPlotter()
+{
+    Serial.print("axWorld:");
+    Serial.print(aaWorld.x);
+    Serial.print(",");
+    Serial.print("ayWorld:");
+    Serial.print(aaWorld.y);
+    Serial.print(",");
+    Serial.print("azWorld:");
+    Serial.println(aaWorld.z);
 }
 
 void PrintHeading()
@@ -664,6 +663,8 @@ void mpu_loop()
             winSamplePrintCount = winSampleCount;
 
             GetMpuDmpValues();
+
+            // SerialPlotter();
             
             xFeatSum += (int32_t)aaWorld.x;
             yFeatSum += (int32_t)aaWorld.y;
@@ -752,14 +753,30 @@ void mpu_loop()
                 zFeatSumSq = 0;
             }
 
-            if (inputChar=='a')
+            // // Test
+            // if (inputChar=='a')
+            // {
+            //   publishMessage();
+            //   inputChar = 'p';
+            //   Serial.println("publishMessage");
+            // }
+
+            if (xyStdDevL<300 && xyStdDevR>850 && publishMsg==1)
             {
               publishMessage();
-              // client.loop();
-              inputChar = 'p';
               Serial.println("publishMessage");
+              publishMsg=0;
             }
 
+            // Need more elgant solution to make sure fall is only detected once every sliding window (3s)? Maybe simple latch is just the answer.
+            if (inputChar=='r')
+            {
+              publishMsg = 1;
+              Serial.println("publishMessageReset");
+              inputChar='p';
+            }
+
+            // Data sampling
             if (inputChar=='o') // In serial monitor need to select "No Line Ending" option, otherwise serial monitor will add return or line ending character. https://www.programmingelectronics.com/serial-read/. Putty config local echo "force off" to not show characters on screen that you have entered, local line ending "force off" so that no line ending or return characters are entered along with your own char entry. https://stackoverflow.com/questions/4999280/how-to-send-characters-in-putty-serial-communication-only-when-pressing-enter
             {
                 totalSampleCount++;
